@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dart-report-reader"
-version = "0.1.0"
+version = "0.1.1"
 description = "DART OpenAPI"
 authors = ["your-name <your@email.com>"]
 readme = "README.md"

@@ -7,18 +7,21 @@ DART는 모든 API 조회에 8자리 corp_code 를 사용한다.
 전체 목록 ZIP 을 받아 JSON 으로 캐싱한다.
 
 캐시 파일 위치: DartConfig.cache_dir / corp_codes.json
+
+변경 이력
+---------
+- XML 파싱을 BeautifulSoup → lxml.etree 로 교체 (레거시 방식 통일)
+- get_zip() 이 이미 etree root 를 반환하므로 별도 ZIP 처리 불필요
 """
 
 from __future__ import annotations
 
-import io
 import json
 import logging
-import zipfile
 from pathlib import Path
 from typing import Optional
 
-from bs4 import BeautifulSoup
+from lxml import etree
 
 from ..config import DartConfig
 from ..api.client import DartHttpClient
@@ -72,13 +75,14 @@ class CorpCodeCache:
         """
         DART 서버에서 최신 기업 코드 ZIP 을 다운로드하고
         캐시를 덮어쓴다.
+
+        client.get_zip() 이 lxml etree root 를 반환하므로
+        별도 ZIP/XML 파싱 없이 바로 사용한다.
         """
         logger.info("기업 코드 목록 다운로드 중...")
-        raw = self._client.get_zip("corpCode")
-        self._config.corp_code_zip_path.write_bytes(raw)
-        logger.info("ZIP 저장: %s", self._config.corp_code_zip_path)
+        root = self._client.get_zip("corpCode")
 
-        records = self._parse_zip(raw)
+        records = self._parse_root(root)
         self._build_indexes(records)
         self._save_to_file(self._config.corp_code_cache_path, records)
         logger.info("기업 코드 캐시 저장 완료 (%d 개)", len(records))
@@ -105,7 +109,7 @@ class CorpCodeCache:
             code = self._by_stock.get(identifier)
             if code:
                 return code
-            raise KeyError(f"종목코드 를 찾을 수 없습니다: {identifier}")
+            raise KeyError(f"종목코드를 찾을 수 없습니다: {identifier}")
 
         # 회사명 정확 일치
         code = self._by_name.get(identifier)
@@ -123,7 +127,7 @@ class CorpCodeCache:
                 f"더 구체적인 이름을 사용하세요: {names}"
             )
 
-        raise KeyError(f"기업 을 찾을 수 없습니다: {identifier}")
+        raise KeyError(f"기업을 찾을 수 없습니다: {identifier}")
 
     def search_name(self, keyword: str) -> list[dict]:
         """회사명에 keyword 가 포함된 기업 목록 반환."""
@@ -145,27 +149,49 @@ class CorpCodeCache:
     # 내부 메서드
     # ------------------------------------------------------------------
 
-    def _parse_zip(self, raw: bytes) -> list[dict]:
-        """ZIP → XML 파싱 → 레코드 리스트 반환."""
-        records: list[dict] = []
-        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-            xml_name = next((n for n in zf.namelist() if n.endswith(".xml")), None)
-            if not xml_name:
-                raise ValueError("ZIP 내에 XML 파일이 없습니다.")
-            xml_bytes = zf.read(xml_name)
+    @staticmethod
+    def _text(element: "etree._Element", tag: str) -> str:
+        """
+        element 의 자식 태그 텍스트를 반환한다.
+        태그가 없거나 텍스트가 None 이면 빈 문자열 반환.
+        """
+        child = element.find(tag)
+        if child is None:
+            return ""
+        return (child.text or "").strip()
 
-        soup = BeautifulSoup(xml_bytes, "lxml-xml")
-        for item in soup.find_all("list"):
-            corp_code  = (item.find("corp_code")  or item.find("corpCode",  {})).get_text(strip=True)
-            corp_name  = (item.find("corp_name")  or item.find("corpName",  {})).get_text(strip=True)
-            stock_code = (item.find("stock_code") or item.find("stockCode", {})).get_text(strip=True)
-            modify_date= (item.find("modify_date")or item.find("modifyDate",{})).get_text(strip=True)
+    def _parse_root(self, root: "etree._Element") -> list[dict]:
+        """
+        lxml etree root → 레코드 리스트 변환.
+
+        DART corpCode.xml 구조:
+            <result>
+              <list>
+                <corp_code>00126380</corp_code>
+                <corp_name>삼성전자</corp_name>
+                <stock_code>005930</stock_code>
+                <modify_date>20240101</modify_date>
+              </list>
+              ...
+            </result>
+        """
+        records: list[dict] = []
+        for item in root.findall("list"):
+            corp_code   = self._text(item, "corp_code")
+            corp_name   = self._text(item, "corp_name")
+            stock_code  = self._text(item, "stock_code")
+            modify_date = self._text(item, "modify_date")
+
+            if not corp_code:          # 코드가 없는 행은 스킵
+                continue
+
             records.append({
                 "corp_code":   corp_code,
                 "corp_name":   corp_name,
                 "stock_code":  stock_code,
                 "modify_date": modify_date,
             })
+
         return records
 
     def _build_indexes(self, records: list[dict]) -> None:
@@ -182,7 +208,10 @@ class CorpCodeCache:
                 self._by_stock[r["stock_code"]] = cc
 
     def _save_to_file(self, path: Path, records: list[dict]) -> None:
-        path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(records, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def _load_from_file(self, path: Path) -> None:
         records = json.loads(path.read_text(encoding="utf-8"))
