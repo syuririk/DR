@@ -91,6 +91,9 @@ class DocumentApi:
                 lxml_parser = etree.XMLParser(recover=True)
                 for name in xml_names:
                     xml_bytes = zf.read(name)
+                    # 비정상 태그 전처리 (회사명·구분명이 꺾쇠 태그로 쓰인 경우)
+                    from ..parser.document_parser import DocumentParser
+                    xml_bytes = DocumentParser.sanitize_xml_bytes(xml_bytes)
                     root = etree.fromstring(xml_bytes, lxml_parser)
                     roots.append(root)
                     logger.debug("파싱: %s", name)

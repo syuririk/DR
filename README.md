@@ -1,3 +1,37 @@
+# dart-report-reader
+
+DART(금융감독원 전자공시시스템) OpenAPI를 통해 **정기보고서를 파싱**하고
+**Obsidian Vault(.md 파일)** 로 저장하는 Python 라이브러리입니다.
+
+[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_ID/dart-report-reader/blob/main/notebooks/dart_report_reader_colab.ipynb)
+
+---
+
+## 주요 기능
+
+| 기능 | 설명 |
+|---|---|
+| **기업 코드 캐싱** | 전체 기업 고유번호 목록을 로컬 JSON으로 캐싱, 회사명/종목코드로 자동 변환 |
+| **정기보고서 파싱** | 배당·임원·직원·최대주주·감사·증권 등 25개 항목 자동 파싱 |
+| **Vault 생성** | 파싱 결과를 Obsidian 호환 `.md` 파일로 저장 (YAML Frontmatter + 테이블) |
+| **일괄 처리** | 여러 기업 × 여러 연도 × 여러 보고서 종류를 한 번에 처리 |
+
+---
+
+## 설치
+
+### pip (GitHub)
+```bash
+pip install git+https://github.com/YOUR_GITHUB_ID/dart-report-reader.git
+```
+
+### 개발 모드 (Poetry)
+```bash
+git clone https://github.com/YOUR_GITHUB_ID/dart-report-reader.git
+cd dart-report-reader
+poetry install
+```
 
 ---
 

@@ -168,6 +168,20 @@ class DocumentParser:
     # 콘텐츠 변환 시 무시할 태그
     _SKIP_TAGS = {"PGBRK", "EXTRACTION", "LIBRARY"}
 
+    # 유효한 DART XML 태그 패턴 (영문 대문자 + 숫자 + 하이픈만 허용)
+    _VALID_TAG_RE = re.compile(rb"<(/?)([A-Z][A-Z0-9\-]*)([^>]*)>")
+
+    # DART에서 실제로 사용하는 태그 화이트리스트
+    _KNOWN_TAGS: frozenset[bytes] = frozenset([
+        b"DOCUMENT", b"DOCUMENT-NAME", b"FORMULA-VERSION", b"COMPANY-NAME",
+        b"SUMMARY", b"EXTRACTION", b"BODY", b"COVER", b"COVER-TITLE",
+        b"SECTION-1", b"SECTION-2", b"SECTION-3", b"SECTION-4",
+        b"LIBRARY", b"TITLE", b"P", b"SPAN", b"TABLE", b"TABLE-GROUP",
+        b"COLGROUP", b"COL", b"TBODY", b"TR", b"TD", b"TH", b"TU",
+        b"IMG", b"IMG-CAPTION", b"PGBRK", b"NOTE", b"ATTACH",
+        b"ATTACH-LIST", b"ATTACH-ITEM", b"A",
+    ])
+
     # ---------------------------------------------------------------------------
 
     def parse(self, root: etree._Element) -> ParsedDocument:
@@ -357,6 +371,75 @@ class DocumentParser:
         period_from = (from_el.get("AUNITVALUE", "") if from_el is not None else "")
         period_to   = (to_el.get("AUNITVALUE", "")   if to_el   is not None else "")
         return period_from, period_to
+
+    @staticmethod
+    def sanitize_xml_bytes(xml_bytes: bytes) -> bytes:
+        """
+        DART XML 전처리: 비정상 태그처럼 쓰인 텍스트를 이스케이프한다.
+
+        일부 보고서는 아래와 같이 텍스트를 XML 태그 형태로 작성한다:
+          - <한국기업평가>      한글로 시작하는 비정상 태그
+          - <NICE 신용평가>     영문+공백+한글 (속성이 아닌 공백 포함)
+          - <당기말>, <표1> 등
+
+        이런 비정상 태그가 있으면 lxml recover=True 가 DOM 트리를
+        잘못 복원하여 이후 모든 섹션 계층이 뒤틀린다.
+
+        판별 기준:
+        1. 태그명이 영문 대문자+숫자+하이픈만으로 구성돼야 정상
+        2. 태그명 이후 부분이 공백+한글 등 비ASCII 를 포함하면 비정상
+        → 비정상이면 < > 전체를 &lt; &gt; 로 이스케이프
+        """
+        known    = DocumentParser._KNOWN_TAGS
+        valid_re = re.compile(rb"^[A-Z][A-Z0-9\-]*$")
+        # 정상 속성 형태: 공백 뒤 영문자/언더스코어/콜론으로 시작하는 속성명=값
+        valid_after = re.compile(rb"^[\s/]*(>|[A-Za-z_:][A-Za-z0-9_:\-\.]*\s*=)")
+
+        # XML 선언·주석·CDATA·일반태그 모두 매칭
+        pattern = re.compile(rb"<(\?|!--|!\[CDATA\[)?(/?)([^>]{1,400})>")
+
+        def safe_replace(m: re.Match) -> bytes:
+            full    = m.group(0)
+            special = m.group(1)   # ?, !--, ![CDATA[
+            slash   = m.group(2)   # / (닫힘 태그)
+            inner   = m.group(3)
+
+            # XML 선언 / 주석 / CDATA → 그대로
+            if special:
+                return full
+
+            # 태그명 추출 (공백·>·/ 전까지)
+            name_m = re.match(rb"^[^\s>/]+", inner)
+            if not name_m:
+                return full
+
+            raw_name   = name_m.group(0)
+            name_upper = raw_name.upper()
+            after_name = inner[len(raw_name):]
+
+            # 태그명에 비ASCII 포함 → 한글 등 → 비정상
+            if any(b > 0x7F for b in raw_name):
+                return full.replace(b"<", b"&lt;").replace(b">", b"&gt;")
+
+            # 태그명이 영문 대문자+숫자+하이픈만이 아니면 비정상
+            if not valid_re.match(name_upper):
+                return full.replace(b"<", b"&lt;").replace(b">", b"&gt;")
+
+            # 화이트리스트에 있으면 정상
+            if name_upper in known:
+                return full
+
+            # 태그명 이후에 비ASCII 문자 포함 → <NICE 신용평가> 등
+            if any(b > 0x7F for b in after_name):
+                return full.replace(b"<", b"&lt;").replace(b">", b"&gt;")
+
+            # 태그명 이후가 정상 속성 형태 → 알 수 없는 DART 확장 태그, 그대로
+            if valid_after.match(after_name):
+                return full
+
+            return full
+
+        return pattern.sub(safe_replace, xml_bytes)
 
     @staticmethod
     def _extract_rcept_no(root: etree._Element) -> str:
