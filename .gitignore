@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+*.zip
+*.json
+!pyproject.toml
+.pytest_cache/
+.ruff_cache/
+.dart_cache/
+dart_vault/
