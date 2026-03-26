@@ -285,15 +285,33 @@ class MarkdownBuilder:
     def _filter_sections(
         sections: list[DocumentSection], keywords: list[str]
     ) -> list[DocumentSection]:
+        """
+        키워드가 포함된 섹션만 반환한다.
+
+        매칭 전략 — 세 단계:
+        ① 자식 섹션 중 키워드 매칭이 있으면 → 해당 자식만 추출, 현재는 컨테이너
+        ② 자식 매칭 없고 현재 섹션이 리프(자식 없음) → 제목 매칭 시 포함
+        ③ 자식 매칭 없고 현재 섹션이 컨테이너(자식 있음) → 포함하지 않음
+           (자식들 중 아무것도 매칭 안 됐으므로, 현재 제목이 매칭돼도 관련 없는
+            자식이 딸려오지 않도록 차단)
+
+        ※ 하위 섹션 없이 챕터 전체를 가져오려면 챕터 고유 키워드 사용:
+           "II. 사업의 내용" 전체 원할 때 → section_filter=["II."] or ["사업의 내용"]
+           → 단, 자식 중 매칭이 먼저 일어나므로 자식 제목과 겹치지 않는 표현 권장
+        """
         result: list[DocumentSection] = []
         for sec in sections:
-            if any(kw in sec.title for kw in keywords):
-                result.append(sec)
-            else:
+            # ① 자식 먼저 재귀 탐색
+            if sec.children:
                 matched_children = MarkdownBuilder._filter_sections(
                     sec.children, keywords
                 )
                 if matched_children:
                     shallow = dataclasses.replace(sec, children=matched_children)
                     result.append(shallow)
+                # ③ 자식 있는데 매칭 없음 → 현재 제목이 매칭돼도 포함하지 않음
+            else:
+                # ② 리프 섹션: 제목 매칭 시 포함
+                if any(kw in sec.title for kw in keywords):
+                    result.append(sec)
         return result
