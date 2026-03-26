@@ -20,7 +20,7 @@ from tests.conftest import (
     MOCK_DIVIDEND_ROWS,
     MOCK_EMPLOYEE_ROWS,
     MOCK_EXECUTIVE_ROWS,
-    make_corp_code_zip,
+    make_corp_code_root,
 )
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ def reader_with_cache(config, corp_json_cache) -> DartReportReader:
     """캐시가 이미 존재하는 상태의 DartReportReader."""
     reader = DartReportReader(config)
     # 실제 HTTP 요청 없이 캐시 로드
-    reader._client.get_zip = MagicMock(return_value=make_corp_code_zip())
+    reader._client.get_zip = MagicMock(return_value=make_corp_code_root())
     reader.init()
     return reader
 
@@ -73,13 +73,13 @@ class TestInit:
 
     def test_init_downloads_when_no_cache(self, config):
         reader = DartReportReader(config)
-        reader._client.get_zip = MagicMock(return_value=make_corp_code_zip())
+        reader._client.get_zip = MagicMock(return_value=make_corp_code_root())
         reader.init()
         reader._client.get_zip.assert_called_once_with("corpCode")
 
     def test_refresh_corp_cache(self, config, corp_json_cache):
         reader = DartReportReader(config)
-        reader._client.get_zip = MagicMock(return_value=make_corp_code_zip())
+        reader._client.get_zip = MagicMock(return_value=make_corp_code_root())
         reader.init()
 
         reader._client.get_zip.reset_mock()

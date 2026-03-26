@@ -30,9 +30,11 @@ from .config import DartConfig, ReportCode, SectionCode
 from .api.client import DartHttpClient
 from .api.filing import FilingApi
 from .api.report import ReportApi
+from .api.document import DocumentApi
 from .cache.corp_code import CorpCodeCache
 from .parser.section_parser import SectionParser, ParsedReport
-from .vault.md_builder import MarkdownBuilder
+from .parser.document_parser import DocumentParser, ParsedDocument
+from .vault.md_builder import MarkdownBuilder, new_batch_id
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,8 @@ __all__ = [
     "ReportCode",
     "SectionCode",
     "ParsedReport",
+    "ParsedDocument",
+    "new_batch_id",
 ]
 
 
@@ -71,12 +75,14 @@ class DartReportReader:
 
     def __init__(self, config: DartConfig) -> None:
         self.config = config
-        self._client  = DartHttpClient(config)
-        self._cache   = CorpCodeCache(config, self._client)
-        self._filing  = FilingApi(self._client)
-        self._report  = ReportApi(self._client)
-        self._parser  = SectionParser()
-        self._builder = MarkdownBuilder(config)
+        self._client   = DartHttpClient(config)
+        self._cache    = CorpCodeCache(config, self._client)
+        self._filing   = FilingApi(self._client)
+        self._report   = ReportApi(self._client)
+        self._document = DocumentApi(self._client)
+        self._parser   = SectionParser()
+        self._doc_parser = DocumentParser()
+        self._builder  = MarkdownBuilder(config)
 
     # ------------------------------------------------------------------
     # 초기화
@@ -175,6 +181,7 @@ class DartReportReader:
         years: list[int],
         reprt_codes: Optional[list[str]] = None,
         sections: Optional[list[str]] = None,
+        batch_id: Optional[str] = None,
     ) -> list[Path]:
         """
         특정 기업의 여러 연도·보고서 종류를 일괄 처리하여
@@ -190,6 +197,8 @@ class DartReportReader:
             보고서 종류 코드 리스트.  기본값: [ReportCode.ANNUAL]
         sections : list[str], optional
             조회할 섹션.  None 이면 config.sections 전부.
+        batch_id : str, optional
+            배치 폴더 ID.  None 이면 {corp_name}/{year}_{label}.md 구조.
 
         Returns
         -------
@@ -208,7 +217,7 @@ class DartReportReader:
                 )
                 try:
                     report = self.fetch_report(corp, year, rcode, sections)
-                    path = self._builder.save(report)
+                    path = self._builder.save(report, batch_id=batch_id)
                     saved_paths.append(path)
                 except KeyError as e:
                     logger.warning("기업 조회 실패: %s", e)
@@ -226,18 +235,31 @@ class DartReportReader:
         years: list[int],
         reprt_codes: Optional[list[str]] = None,
         sections: Optional[list[str]] = None,
+        batch_id: Optional[str] = None,
     ) -> dict[str, list[Path]]:
         """
-        여러 기업을 일괄 처리한다.
+        여러 기업을 배치 ID 폴더 아래 일괄 처리한다.
+
+        Parameters
+        ----------
+        batch_id : str, optional
+            폴더명으로 쓸 배치 ID.  None 이면 자동 생성.
+            같은 요청의 모든 기업 파일이 동일 폴더에 저장된다.
 
         Returns
         -------
         dict[str, list[Path]]
             {corp_identifier: [저장된 파일 경로 리스트]}
         """
+        if batch_id is None:
+            batch_id = new_batch_id()
+        logger.info("배치 시작: %s (%d개 기업)", batch_id, len(corps))
+
         result: dict[str, list[Path]] = {}
         for corp in corps:
-            result[corp] = self.build_vault(corp, years, reprt_codes, sections)
+            result[corp] = self.build_vault(
+                corp, years, reprt_codes, sections, batch_id=batch_id
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -259,3 +281,120 @@ class DartReportReader:
             if label in f.get("report_nm", ""):
                 return f.get("rcept_no", "")
         return ""
+
+    # ------------------------------------------------------------------
+    # 원문 파싱 (DS001 document.xml)
+    # ------------------------------------------------------------------
+
+    def fetch_document(self, rcept_no: str) -> ParsedDocument:
+        """
+        접수번호로 공시서류 원문 XML을 다운로드하고 ParsedDocument 로 반환한다.
+
+        Parameters
+        ----------
+        rcept_no : str
+            공시 접수번호 (14자리).
+
+        Returns
+        -------
+        ParsedDocument
+            전체 목차·섹션이 파싱된 결과.
+        """
+        root = self._document.fetch_main_xml(rcept_no)
+        doc  = self._doc_parser.parse(root)
+        doc.rcept_no = rcept_no   # XML 내부에 없으므로 직접 주입
+        return doc
+
+    def fetch_document_by_corp(
+        self,
+        corp: str,
+        bsns_year: Union[int, str],
+        reprt_code: str = ReportCode.ANNUAL,
+    ) -> ParsedDocument:
+        """
+        기업명/종목코드와 연도로 원문을 조회한다.
+        내부적으로 공시 목록에서 rcept_no 를 자동 조회한다.
+
+        Parameters
+        ----------
+        corp : str
+            회사명, 종목코드, 또는 corp_code.
+        bsns_year : int | str
+            사업연도.
+        reprt_code : str
+            보고서 코드.  기본값: 사업보고서(11011).
+        """
+        corp_code = self._cache.resolve(corp)
+        rcept_no  = self._get_rcept_no(corp_code, str(bsns_year), reprt_code)
+        if not rcept_no:
+            raise ValueError(
+                f"{corp} {bsns_year} {ReportCode.label(reprt_code)} 의 "
+                f"접수번호를 찾을 수 없습니다."
+            )
+        return self.fetch_document(rcept_no)
+
+    def build_document_vault(
+        self,
+        corp: str,
+        bsns_year: Union[int, str],
+        reprt_code: str = ReportCode.ANNUAL,
+        section_filter: Optional[list[str]] = None,
+        batch_id: Optional[str] = None,
+    ) -> Path:
+        """
+        원문 XML을 파싱해 .md 파일로 저장한다.
+
+        Parameters
+        ----------
+        section_filter : list[str], optional
+            저장할 섹션 제목 키워드.  None 이면 전체 저장.
+            예) ["사업의 내용"] → II. 사업의 내용만 저장
+            예) ["기타 참고사항"] → 7. 기타 참고사항만 저장
+        batch_id : str, optional
+            배치 폴더 ID.
+
+        Returns
+        -------
+        Path
+            저장된 .md 파일 경로.
+        """
+        doc = self.fetch_document_by_corp(corp, bsns_year, reprt_code)
+        return self._builder.save_document(
+            doc, batch_id=batch_id, section_filter=section_filter
+        )
+
+    def build_document_vault_multi(
+        self,
+        corps: list[str],
+        bsns_year: Union[int, str],
+        reprt_code: str = ReportCode.ANNUAL,
+        section_filter: Optional[list[str]] = None,
+        batch_id: Optional[str] = None,
+    ) -> dict[str, Path]:
+        """
+        여러 기업의 원문을 같은 batch_id 폴더에 일괄 저장한다.
+
+        Returns
+        -------
+        dict[str, Path]
+            {corp_identifier: 저장된 파일 경로}
+        """
+        if batch_id is None:
+            batch_id = new_batch_id()
+        logger.info("문서 배치 시작: %s (%d개 기업)", batch_id, len(corps))
+
+        result: dict[str, Path] = {}
+        for corp in corps:
+            try:
+                result[corp] = self.build_document_vault(
+                    corp, bsns_year, reprt_code,
+                    section_filter=section_filter,
+                    batch_id=batch_id,
+                )
+            except KeyError as e:
+                logger.warning("기업 조회 실패: %s", e)
+            except Exception as e:
+                logger.error("[%s] 원문 처리 실패: %s", corp, e)
+
+        return result
+

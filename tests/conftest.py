@@ -1,17 +1,22 @@
 """
 tests/conftest.py
 공통 pytest 픽스처
+
+변경 이력
+---------
+- make_corp_code_zip() → make_corp_code_root() 로 교체
+  client.get_zip() 이 이제 lxml etree root 를 반환하므로
+  Mock 반환값도 동일하게 맞춤
 """
 
 from __future__ import annotations
 
 import json
-import zipfile
-import io
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from lxml import etree
 
 from dart_report_reader.config import DartConfig
 from dart_report_reader.api.client import DartHttpClient
@@ -45,36 +50,45 @@ def config(tmp_dirs) -> DartConfig:
 # ---------------------------------------------------------------------------
 
 MOCK_CORPS = [
-    {"corp_code": "00126380", "corp_name": "삼성전자", "stock_code": "005930", "modify_date": "20240101"},
+    {"corp_code": "00126380", "corp_name": "삼성전자",   "stock_code": "005930", "modify_date": "20240101"},
     {"corp_code": "00164742", "corp_name": "현대자동차", "stock_code": "005380", "modify_date": "20240101"},
     {"corp_code": "00164779", "corp_name": "SK하이닉스", "stock_code": "000660", "modify_date": "20240101"},
-    {"corp_code": "00400473", "corp_name": "카카오", "stock_code": "035720", "modify_date": "20240101"},
-    {"corp_code": "00266961", "corp_name": "NAVER", "stock_code": "035420", "modify_date": "20240101"},
+    {"corp_code": "00400473", "corp_name": "카카오",     "stock_code": "035720", "modify_date": "20240101"},
+    {"corp_code": "00266961", "corp_name": "NAVER",      "stock_code": "035420", "modify_date": "20240101"},
 ]
 
 
-def make_corp_code_zip() -> bytes:
-    """테스트용 기업 코드 ZIP(XML) 생성."""
-    xml_lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<result>"]
-    for c in MOCK_CORPS:
+def make_corp_code_root(corps: list = None):
+    """
+    테스트용 lxml etree root 반환.
+    client.get_zip() 은 etree root 를 반환하므로 Mock 반환값도 이 함수로 생성.
+    """
+    if corps is None:
+        corps = MOCK_CORPS
+
+    xml_lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<r>"]
+    for c in corps:
         xml_lines.append("<list>")
         xml_lines.append(f"<corp_code>{c['corp_code']}</corp_code>")
         xml_lines.append(f"<corp_name>{c['corp_name']}</corp_name>")
         xml_lines.append(f"<stock_code>{c['stock_code']}</stock_code>")
         xml_lines.append(f"<modify_date>{c['modify_date']}</modify_date>")
         xml_lines.append("</list>")
-    xml_lines.append("</result>")
-    xml_bytes = "\n".join(xml_lines).encode("utf-8")
+    xml_lines.append("</r>")
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("CORPCODE.xml", xml_bytes)
-    return buf.getvalue()
+    xml_bytes = "\n".join(xml_lines).encode("utf-8")
+    parser = etree.XMLParser(recover=True)
+    return etree.fromstring(xml_bytes, parser)
+
+
+# 하위 호환 alias
+make_corp_code_zip = make_corp_code_root
 
 
 @pytest.fixture
-def corp_zip() -> bytes:
-    return make_corp_code_zip()
+def corp_zip():
+    """get_zip() Mock 반환값 — lxml etree root."""
+    return make_corp_code_root()
 
 
 @pytest.fixture

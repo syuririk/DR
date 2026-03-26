@@ -168,4 +168,3 @@ class DartHttpClient:
         parser = etree.XMLParser(recover=True)
         root = etree.fromstring(xml_bytes, parser)
         return root
-    

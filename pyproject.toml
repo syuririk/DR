@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "dart-report-reader"
-version = "0.1.1"
-description = "DART OpenAPI"
+version = "0.5.0"
+description = "DART OpenAPI 정기보고서 파싱 및 Obsidian Vault 생성 라이브러리"
 authors = ["your-name <your@email.com>"]
 readme = "README.md"
 license = "MIT"
