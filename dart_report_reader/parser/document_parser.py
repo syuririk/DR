@@ -211,14 +211,17 @@ class ViewerParser:
 
     def __init__(self, timeout: int = 30) -> None:
         self.timeout = timeout
+        # Session 재사용 → TCP 연결 비용 절감
+        self._session = requests.Session()
+        self._session.headers.update(self.HEADERS)
 
     def fetch_html(self, rcept_no: str, dcm_no: str, ele_id: int) -> str:
-        """뷰어 HTML 가져오기."""
+        """뷰어 HTML 가져오기 (Session 재사용)."""
         url = self.VIEWER_URL.format(
             rcept_no=rcept_no, dcm_no=dcm_no, ele_id=ele_id
         )
         logger.debug("뷰어 요청: %s", url)
-        res = requests.get(url, headers=self.HEADERS, timeout=self.timeout)
+        res = self._session.get(url, timeout=self.timeout)
         res.raise_for_status()
         return res.text
 
@@ -254,10 +257,31 @@ class ViewerParser:
             self._table_to_md(el, lines)
             return
 
-        if tag in ("p", "div", "span", "td", "th", "li"):
-            text = el.get_text(separator=" ", strip=True)
-            if text:
-                lines.append(text)
+        # p, span, li: 자식에 table이 없으면 텍스트만, 있으면 자식 순회
+        if tag in ("p", "span", "li"):
+            if el.find("table"):
+                for child in el.children:
+                    if hasattr(child, "name") and child.name:
+                        self._process_element(child, lines)
+                    else:
+                        t = str(child).strip()
+                        if t:
+                            lines.append(t)
+            else:
+                text = el.get_text(separator=" ", strip=True)
+                if text:
+                    lines.append(text)
+            return
+
+        # div: 항상 자식 순회 (내부에 table 포함될 수 있음)
+        if tag == "div":
+            for child in el.children:
+                if hasattr(child, "name") and child.name:
+                    self._process_element(child, lines)
+                else:
+                    t = str(child).strip()
+                    if t:
+                        lines.append(t)
             return
 
         if tag == "br":
@@ -368,12 +392,19 @@ class DocumentParser:
         ----------
         title_filter : list[str], optional
             특정 키워드 포함 섹션만 로딩. None 이면 전체.
+            자신 또는 자손 중 하나라도 키워드가 포함되면 해당 섹션을 뷰어에서 로딩.
         """
         doc.dcm_no = dcm_no
 
+        def _matches(sec: DocumentSection) -> bool:
+            """자신 또는 자손 중 title_filter 매칭이 있으면 True."""
+            if any(kw in sec.title for kw in title_filter):
+                return True
+            return any(_matches(child) for child in sec.children)
+
         flat = doc.all_sections_flat()
         for sec in flat:
-            if title_filter and not any(kw in sec.title for kw in title_filter):
+            if title_filter and not _matches(sec):
                 continue
             try:
                 sec.content_md = self.fetch_section_content(

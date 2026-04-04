@@ -59,6 +59,8 @@ class DartHttpClient:
 
     def __init__(self, config: DartConfig) -> None:
         self.config = config
+        # Session 재사용 → TCP handshake 비용 절감
+        self._session = requests.Session()
 
     # ------------------------------------------------------------------
     # 내부: URL 조립
@@ -107,7 +109,7 @@ class DartHttpClient:
             HTTP 오류 또는 status != '000' 일 때.
         """
         url = self._build_url(endpoint, "json", params)
-        res = requests.get(url, timeout=self.config.timeout)
+        res = self._session.get(url, timeout=self.config.timeout)
 
         if res.status_code != 200:
             raise DartApiError(f"HTTP Error: {res.status_code}  (url={url})")
@@ -147,7 +149,7 @@ class DartHttpClient:
             HTTP 오류 또는 ZIP/XML 파싱 실패 시.
         """
         url = self._build_url(endpoint, "xml", params)
-        res = requests.get(url, timeout=self.config.timeout)
+        res = self._session.get(url, timeout=self.config.timeout)
 
         if res.status_code != 200:
             raise DartApiError(f"HTTP Error: {res.status_code}  (url={url})")
