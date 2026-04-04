@@ -2,20 +2,18 @@
 dart_report_reader/api/document.py
 공시서류 원문 파일 API (DS001 - document.xml)
 
-DART document.xml 엔드포인트는 rcept_no 로 ZIP을 반환한다.
-ZIP 안에는 1~3개의 XML 파일이 들어 있다:
-  - {rcept_no}.xml          : 본문 (사업보고서 전체)
-  - {rcept_no}_NNNNN.xml    : 첨부(감사보고서 등)
+v5 변경: ZIP 처리 후 dcmNo 추출까지 담당
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import re
 import zipfile
 from typing import Optional
 
-from lxml import etree
+import requests
 
 from .client import DartHttpClient, DartApiError
 
@@ -23,84 +21,66 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentApi:
-    """
-    공시서류 원문 XML 조회.
-
-    rcept_no(접수번호)로 ZIP을 받아 lxml etree Element 목록으로 반환한다.
-    """
+    """공시서류 원문 ZIP 조회."""
 
     def __init__(self, client: DartHttpClient) -> None:
         self._client = client
 
     # ------------------------------------------------------------------
 
-    def fetch_xml_roots(self, rcept_no: str) -> list[etree._Element]:
+    def fetch_zip_info(self, rcept_no: str) -> dict:
         """
-        rcept_no 로 document.xml 을 요청하고
-        ZIP 안의 모든 XML 파일을 파싱해 root Element 목록을 반환한다.
-
-        Parameters
-        ----------
-        rcept_no : str
-            공시 접수번호 (14자리, 예: "20240312000736").
+        document.xml ZIP 을 다운로드하고 파싱에 필요한 정보를 반환한다.
 
         Returns
         -------
-        list[etree._Element]
-            XML 파일별 root Element 목록.
-            첫 번째 원소가 본문(사업보고서), 이후는 첨부 파일.
+        dict with keys:
+            rcept_no  : str
+            main_xml  : bytes   — 본문 XML ({rcept_no}.xml)
+            dcm_no    : str     — 첫 번째 첨부 파일에서 추출한 문서번호
+            all_files : list[str] — ZIP 내 전체 파일명
         """
         url = self._client._build_url("document", "xml", {"rcept_no": rcept_no})
-        import requests
         res = requests.get(url, timeout=self._client.config.timeout)
 
         if res.status_code != 200:
-            raise DartApiError(f"HTTP Error: {res.status_code}  (rcept_no={rcept_no})")
+            raise DartApiError(f"HTTP {res.status_code}  (rcept_no={rcept_no})")
 
-        roots = self._parse_zip_bytes(res.content, rcept_no)
-        logger.info("rcept_no=%s — XML 파일 %d개 파싱 완료", rcept_no, len(roots))
-        return roots
-
-    def fetch_main_xml(self, rcept_no: str) -> etree._Element:
-        """
-        본문 XML(첫 번째 파일)의 root Element만 반환한다.
-        """
-        roots = self.fetch_xml_roots(rcept_no)
-        if not roots:
-            raise DartApiError(f"ZIP 안에 XML 파일이 없습니다. (rcept_no={rcept_no})")
-        return roots[0]
+        return self._parse_zip(res.content, rcept_no)
 
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_zip_bytes(
-        raw: bytes, rcept_no: str
-    ) -> list[etree._Element]:
-        """ZIP bytes → XML root Element 목록."""
+    def _parse_zip(raw: bytes, rcept_no: str) -> dict:
         try:
             with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-                xml_names = sorted(
-                    n for n in zf.namelist() if n.lower().endswith(".xml")
-                )
-                if not xml_names:
-                    raise DartApiError(
-                        f"ZIP 안에 XML 파일이 없습니다. (rcept_no={rcept_no})"
-                    )
+                names = zf.namelist()
 
-                roots = []
-                lxml_parser = etree.XMLParser(recover=True)
-                for name in xml_names:
-                    xml_bytes = zf.read(name)
-                    # 비정상 태그 전처리 (회사명·구분명이 꺾쇠 태그로 쓰인 경우)
-                    from ..parser.document_parser import DocumentParser
-                    xml_bytes = DocumentParser.sanitize_xml_bytes(xml_bytes)
-                    root = etree.fromstring(xml_bytes, lxml_parser)
-                    roots.append(root)
-                    logger.debug("파싱: %s", name)
+                # 본문 XML: {rcept_no}.xml
+                main_name = next(
+                    (n for n in names if re.match(rf'^{re.escape(rcept_no)}\.xml$', n)),
+                    None
+                )
+                if main_name is None:
+                    # 폴백: 가장 큰 파일
+                    main_name = max(names, key=lambda n: zf.getinfo(n).file_size)
+
+                main_xml = zf.read(main_name)
+
+                # dcmNo: 첨부 파일명 {rcept_no}_{dcmNo}.xml 에서 추출
+                dcm_no = ""
+                for n in sorted(names):
+                    m = re.match(rf'^{re.escape(rcept_no)}_(\d+)\.xml$', n)
+                    if m:
+                        dcm_no = m.group(1)
+                        break
 
         except zipfile.BadZipFile as e:
-            raise DartApiError(
-                f"ZIP 파일 파싱 실패 (rcept_no={rcept_no}): {e}"
-            ) from e
+            raise DartApiError(f"ZIP 파싱 실패 (rcept_no={rcept_no}): {e}") from e
 
-        return roots
+        return {
+            "rcept_no":  rcept_no,
+            "main_xml":  main_xml,
+            "dcm_no":    dcm_no,
+            "all_files": names,
+        }
